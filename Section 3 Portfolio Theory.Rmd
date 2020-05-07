@@ -1,0 +1,503 @@
+---
+title: "5261pj"
+author: 'Chui Kong (uni: ck2964)'
+date: "4/18/2020"
+output: pdf_document
+---
+
+
+```{r}
+library(readr)
+data=read_csv("/Users/hulk/Desktop/5261pj/data_close.csv")
+prices=data #15 assets(in different area)
+n=dim(prices)[1] 
+returns =(prices[2:n,]/prices[1:(n-1),]-1) # returns by day
+head(returns,3)
+```
+
+####2.1 Numerical Analysis
+Means, standard deviations, Skewness Coefficients, Kurtosis Coefficients and beta of each asset
+```{r 2.1}
+library(tidyr)
+library(dplyr)
+# mean, covariance, standard deviation of PRICES
+mean.p = colMeans(prices) 
+cov.p = cov(prices)
+sd.p = sqrt(diag(cov.p))
+
+# mean, covariance, standard deviation of RETURN
+mean.r = colMeans(returns) 
+cov.r = cov(returns)
+sd.r = sqrt(diag(cov.r))
+
+# Skewness Coefficients, Kurtosis Coefficients and beta of PRICES
+
+list=as.list(prices)
+sk.p=unlist(lapply(list,function(data){
+  (sum((data-mean(data))^3/(sd(data))^3))/length(data)
+}))
+kt.p=unlist(lapply(list,function(data){
+  (sum((data-mean(data))^4/(sd(data))^4))/length(data)
+}))
+
+#Info Table
+info=cbind(mean.r,sd.r,sk.p,kt.p)
+colnames(info)=c("mean","sd","skewness","kurtosis")
+sd.r[order(sd.r,decreasing = F)]
+```
+```{r}
+#Sharpe's Ratio (using sample mean &sd in month)
+rf.m=1.54/100/12/30 #daily risk free
+sharpes.ratio=(mean.r-rf.m)/sd.r
+
+sort(sharpes.ratio,decreasing = T)
+cat("\n The biggest sharpe ratior is UNH: ",max(sharpes.ratio)) #UNH
+```
+###3 Portfolio Theory
+In this section, we are describing the performance of 15 assets in a portfolio, includes minimum variance portfolio (MVP), tangency portfolio & sharpe ratio, and the effect of adding short sell.
+```{r warning=FALSE}
+##Portfolio Function Code
+library(quadprog)
+library(Ecdat)
+```
+```{r}
+efficient.portfolio <-
+function(er, cov.mat, target.return, shorts=TRUE)
+{
+  # compute minimum variance portfolio subject to target return
+  #
+  # inputs:
+  # er					    N x 1 vector of expected returns
+  # cov.mat  			  N x N covariance matrix of returns
+  # target.return	  scalar, target expected return
+  # shorts          logical, allow shorts is TRUE
+  #
+  # output is portfolio object with the following elements
+  # call				    original function call
+  # er					    portfolio expected return
+  # sd					    portfolio standard deviation
+  # weights			    N x 1 vector of portfolio weights
+  #
+  call <- match.call()
+
+  #
+  # check for valid inputs
+  #
+  asset.names <- names(er)
+  er <- as.vector(er)					# assign names if none exist
+  N <- length(er)
+  cov.mat <- as.matrix(cov.mat)
+  if(N != nrow(cov.mat))
+    stop("invalid inputs")
+  if(any(diag(chol(cov.mat)) <= 0))
+    stop("Covariance matrix not positive definite")
+  # remark: could use generalized inverse if cov.mat is positive semidefinite
+
+  #
+  # compute efficient portfolio
+  #
+  if(shorts==TRUE){
+    ones <- rep(1, N)
+    top <- cbind(2*cov.mat, er, ones)
+    bot <- cbind(rbind(er, ones), matrix(0,2,2))
+    A <- rbind(top, bot)
+    b.target <- as.matrix(c(rep(0, N), target.return, 1))
+    x <- solve(A, b.target)
+    w <- x[1:N]
+  } else if(shorts==FALSE){
+    Dmat <- 2*cov.mat
+    dvec <- rep.int(0, N)
+    Amat <- cbind(rep(1,N), er, diag(1,N))
+    bvec <- c(1, target.return, rep(0,N))
+    result <- solve.QP(Dmat=Dmat,dvec=dvec,Amat=Amat,bvec=bvec,meq=2)
+    w <- round(result$solution, 6)
+  } else {
+    stop("shorts needs to be logical. For no-shorts, shorts=FALSE.")
+  }
+
+  #
+  # compute portfolio expected returns and variance
+  #
+  names(w) <- asset.names
+  er.port <- crossprod(er,w)
+  sd.port <- sqrt(w %*% cov.mat %*% w)
+  ans <- list("call" = call,
+	      "er" = as.vector(er.port),
+	      "sd" = as.vector(sd.port),
+	      "weights" = w) 
+  class(ans) <- "portfolio"
+  ans
+}
+
+globalMin.portfolio <-function(er, cov.mat, shorts=TRUE){
+  # Compute global minimum variance portfolio
+  #
+  # inputs:
+  # er				N x 1 vector of expected returns
+  # cov.mat		N x N return covariance matrix
+  # shorts          logical, allow shorts is TRUE
+  #
+  # output is portfolio object with the following elements
+  # call			original function call
+  # er				portfolio expected return
+  # sd				portfolio standard deviation
+  # weights		N x 1 vector of portfolio weights
+  call <- match.call()
+
+  #
+  # check for valid inputs
+  #
+  asset.names <- names(er)
+  er <- as.vector(er)					# assign names if none exist
+  cov.mat <- as.matrix(cov.mat)
+  N <- length(er)
+  if(N != nrow(cov.mat))
+    stop("invalid inputs")
+  if(any(diag(chol(cov.mat)) <= 0))
+    stop("Covariance matrix not positive definite")
+  # remark: could use generalized inverse if cov.mat is positive semi-definite
+
+  #
+  # compute global minimum portfolio
+  #
+  if(shorts==TRUE){
+    cov.mat.inv <- solve(cov.mat)
+    one.vec <- rep(1,N)
+    w.gmin <- rowSums(cov.mat.inv) / sum(cov.mat.inv)
+    w.gmin <- as.vector(w.gmin)
+  } else if(shorts==FALSE){
+    Dmat <- 2*cov.mat
+    dvec <- rep.int(0, N)
+    Amat <- cbind(rep(1,N), diag(1,N))
+    bvec <- c(1, rep(0,N))
+    result <- solve.QP(Dmat=Dmat,dvec=dvec,Amat=Amat,bvec=bvec,meq=1)
+    w.gmin <- round(result$solution, 6)
+  } else {
+    stop("shorts needs to be logical. For no-shorts, shorts=FALSE.")
+  }
+ 
+  names(w.gmin) <- asset.names
+  er.gmin <- crossprod(w.gmin,er)
+  sd.gmin <- sqrt(t(w.gmin) %*% cov.mat %*% w.gmin)
+  gmin.port <- list("call" = call,
+		    "er" = as.vector(er.gmin),
+		    "sd" = as.vector(sd.gmin),
+		    "weights" = w.gmin)
+  class(gmin.port) <- "portfolio"
+  gmin.port
+}
+
+
+
+efficient.frontier <- function(er, cov.mat, nport=20, alpha.min=-0.5, alpha.max=1.5, shorts=TRUE)
+{
+  call <- match.call()
+
+  #
+  # check for valid inputs
+  #
+  asset.names <- names(er)
+  er <- as.vector(er)
+  N <- length(er)
+  cov.mat <- as.matrix(cov.mat)
+  if(N != nrow(cov.mat))
+    stop("invalid inputs")
+  if(any(diag(chol(cov.mat)) <= 0))
+    stop("Covariance matrix not positive definite")
+
+  #
+  # create portfolio names
+  #
+  port.names <- rep("port",nport)
+  ns <- seq(1,nport)
+  port.names <- paste(port.names,ns)
+
+  #
+  # compute global minimum variance portfolio
+  #
+  cov.mat.inv <- solve(cov.mat)
+  one.vec <- rep(1, N)
+  port.gmin <- globalMin.portfolio(er, cov.mat, shorts)
+  w.gmin <- port.gmin$weights
+
+  if(shorts==TRUE){
+    # compute efficient frontier as convex combinations of two efficient portfolios
+    # 1st efficient port: global min var portfolio
+    # 2nd efficient port: min var port with ER = max of ER for all assets
+    er.max <- max(er)
+    port.max <- efficient.portfolio(er,cov.mat,er.max)
+    w.max <- port.max$weights    
+    a <- seq(from=alpha.min,to=alpha.max,length=nport) # convex combinations
+    we.mat <- a %o% w.gmin + (1-a) %o% w.max	         # rows are efficient portfolios
+    er.e <- we.mat %*% er							                 # expected returns of efficient portfolios
+    er.e <- as.vector(er.e)
+  } else if(shorts==FALSE){
+    we.mat <- matrix(0, nrow=nport, ncol=N)
+    we.mat[1,] <- w.gmin
+    we.mat[nport, which.max(er)] <- 1
+    er.e <- as.vector(seq(from=port.gmin$er, to=max(er), length=nport))
+    for(i in 2:(nport-1)) 
+      we.mat[i,] <- efficient.portfolio(er, cov.mat, er.e[i], shorts)$weights
+  } else {
+    stop("shorts needs to be logical. For no-shorts, shorts=FALSE.")
+  }
+  
+  names(er.e) <- port.names
+  cov.e <- we.mat %*% cov.mat %*% t(we.mat) # cov mat of efficient portfolios
+  sd.e <- sqrt(diag(cov.e))					        # std devs of efficient portfolios
+  sd.e <- as.vector(sd.e)
+  names(sd.e) <- port.names
+  dimnames(we.mat) <- list(port.names,asset.names)
+
+  # 
+  # summarize results
+  #
+  ans <- list("call" = call,
+	      "er" = er.e,
+	      "sd" = sd.e,
+	      "weights" = we.mat)
+  class(ans) <- "Markowitz"
+  ans
+}
+
+
+tangency.portfolio <- function(er,cov.mat,risk.free, shorts=TRUE)
+{
+  call <- match.call()
+
+  #
+  # check for valid inputs
+  #
+  asset.names <- names(er)
+  if(risk.free < 0)
+    stop("Risk-free rate must be positive")
+  er <- as.vector(er)
+  cov.mat <- as.matrix(cov.mat)
+  N <- length(er)
+  if(N != nrow(cov.mat))
+    stop("invalid inputs")
+  if(any(diag(chol(cov.mat)) <= 0))
+    stop("Covariance matrix not positive definite")
+  # remark: could use generalized inverse if cov.mat is positive semi-definite
+
+  #
+  # compute global minimum variance portfolio
+  #
+  gmin.port <- globalMin.portfolio(er, cov.mat, shorts=shorts)
+  if(gmin.port$er < risk.free)
+    stop("Risk-free rate greater than avg return on global minimum variance portfolio")
+
+  # 
+  # compute tangency portfolio
+  #
+  if(shorts==TRUE){
+    cov.mat.inv <- solve(cov.mat)
+    w.t <- cov.mat.inv %*% (er - risk.free) # tangency portfolio
+    w.t <- as.vector(w.t/sum(w.t))          # normalize weights
+  } else if(shorts==FALSE){
+    Dmat <- 2*cov.mat
+    dvec <- rep.int(0, N)
+    er.excess <- er - risk.free
+    Amat <- cbind(er.excess, diag(1,N))
+    bvec <- c(1, rep(0,N))
+    result <- quadprog::solve.QP(Dmat=Dmat,dvec=dvec,Amat=Amat,bvec=bvec,meq=1)
+    w.t <- round(result$solution/sum(result$solution), 6)
+  } else {
+    stop("Shorts needs to be logical. For no-shorts, shorts=FALSE.")
+  }
+    
+  names(w.t) <- asset.names
+  er.t <- crossprod(w.t,er)
+  sd.t <- sqrt(t(w.t) %*% cov.mat %*% w.t)
+  tan.port <- list("call" = call,
+		   "er" = as.vector(er.t),
+		   "sd" = as.vector(sd.t),
+		   "weights" = w.t)
+  class(tan.port) <- "portfolio"
+  return(tan.port)
+}
+
+plot.portfolio <- function(object, ...)
+{
+  asset.names <- names(object$weights)
+  barplot(object$weights, names=asset.names,
+	  xlab="Assets", ylab="Weight", main="Portfolio Weights", ...)
+  invisible()
+}
+```
+
+```{r}
+rf.m=1.54/100/12/30 #daily risk free
+sharpes.ratio=(mean.r-rf.m)/sd.r
+```
+
+
+
+####3.1 Portfolio with no Short Sell
+```{r}
+#SHORT SELL IS NOT ALLOWED
+#mvp with no short sell
+mvp.noshort=globalMin.portfolio(mean.r,cov.r,shorts=FALSE)
+
+mvp.ns.x=mvp.noshort$sd
+mvp.ns.y=mvp.noshort$er
+mvp.ns.w=mvp.noshort$weights
+
+#Tangency Portfolio
+tangency.noshort=tangency.portfolio(mean.r,cov.r,risk.free = rf.m,shorts = FALSE)
+tg.ns.y=tangency.noshort$er #tangency return
+tg.ns.x=tangency.noshort$sd
+tg.ns.w=tangency.noshort$weights
+
+#Efficient Portfolio Frontier 
+eff.front.noshort=efficient.frontier(mean.r,cov.r,nport=50, shorts = FALSE)
+ef.ns.y=eff.front.noshort$er
+ef.ns.x=eff.front.noshort$sd
+ef.ns.w=eff.front.noshort$weights
+
+#Data Table
+library(formattable)
+noshort.table=data.frame("risk.free.day"=rbind(round(rf.m,5),0) ,
+                       "mvp day"=rbind(mvp.ns.y,mvp.ns.x),
+                       "tangency.day"=rbind(tg.ns.y,tg.ns.x),
+                       "mvp year"=rbind(mvp.ns.y*12*30,mvp.ns.x*sqrt(12*30)),
+                       "Tangency year"=rbind(tg.ns.y*12*30,tg.ns.x*sqrt(12*30)),
+                       "risk.free.year"=rbind(rf.m*12*30,0),
+                       row.names = c("return","risk"))
+formattable(noshort.table)
+#Value at Risk
+s=100000
+# t= one month
+#Loss~N(-mean.mvp,sd.mvp), assuming mvp is normal
+VaR.ns.mvp=(-mvp.ns.y+mvp.ns.x*qnorm(0.95))*s
+
+VaR.r=(-mean.r+sd.r*qnorm(0.95))*s
+
+
+#Sharpe Ratio
+sharpe.ns = ( ef.ns.y- rf.m) / ef.ns.x 
+# compute Sharpe’s ratios
+(tg.ns.sharpe=max(sharpe.ns))
+assets.ns.sharpe=(mean.r -rf.m)/sd.r 
+```
+In this case, we restrict selling short and obtain the MVP daily average return (0.000193) and its standard
+deviation (0.00969). The daily MVP return is higher than the daily risk free rate (0.00004). If we convert them into yearly base, the MVP has its return equals 6.96% and risk 18.38%. The return is higher than the yearly risk free rate(1.54%) by 5.42%.  
+The point T has the highest Sharpe ratio is called the tangency portfolio. The daily tangency return equals 0.0008 and its standard deviation is 0.01441. The daily return is higher than the daily risk free rate. If we convert them to yearly base, the tangency return will be 29.32% and the risk will be 27.34%. The return is higher than yearly risk free rate (1.54%) by 27.78%.
+```{r}
+sort(mvp.ns.w,decreasing = T)
+```
+```{r}
+sort(tg.ns.w,decreasing = T)
+```
+The tangent portfolio gives more weight to UNH and AAPL(They has the highest sharpe ratios, shown in Table 2.3). The MVP porfolio gives more weight to the asset with lower SDs(KO, VG, JNJ,etc. See the thing below). It demonstrate that MVP tends to select the assets with minimal risks disregarding the return and tangency portfolio tends to select assets with high sharpe ratio.
+
+```{r}
+sort(sd.r,decreasing = T)
+```
+
+
+```{r}
+#SHORT SELL IS NOT ALLOWED
+#Portfolio Plot
+plot(ef.ns.x,ef.ns.y,type="l",main="Efficient Portfolio Frontier (No Short)", 
+     xlab="daily Risk", ylab="daily Return",
+     ylim = c(-0.001,0.004),xlim=c(-0.0005,0.015),lty=3)
+points(0, rf.m, cex = 4, pch = "*") # show risk-free asset
+sharpe = ( ef.ns.y- rf.m) / ef.ns.x # compute Sharpe’s ratios
+ind = (sharpe == max(sharpe)) # Find maximum Sharpe’s ratio
+lines(c(0, 2), rf.m + c(0, 2) * (ef.ns.y[ind] - rf.m) / ef.ns.x[ind], lwd = 4, lty = 1, col = "blue") # show line of optimal portfolios
+points(ef.ns.x[ind], ef.ns.y[ind], cex = 4, pch = "*") # tangency portfolio
+ind2 = (ef.ns.x == min(ef.ns.x)) # find minimum variance portfolio
+points(ef.ns.x[ind2], ef.ns.y[ind2], cex = 2, pch = "+") # min var portfolio
+ind3 = (ef.ns.y > ef.ns.y[ind2])
+lines(ef.ns.x[ind3], ef.ns.y[ind3], type = "l", xlim = c(0, 10000),
+      ylim = c(0, 0.3), lwd = 3, col = "red") # plot efficient frontier
+
+```
+The Efficient Portfolio Frontier is presented in Figure 3.1. Following information is for interpreting purpose: The blue line is the sharp slope of tangency portfolio. The red line represents the efficient frontier. The star mark at the lower end of the blue line is the risk free rate (daily risk=0, daily return=0.00004). The star mark at the upper part of the blue line is the tangency portfolio (daily risk=0.008, daily return=0.014). The cross mark at the lower end of red line is MVP (daily risk=0.00019, daily return=0.0097)  
+
+According to Figure 3.1, the correlation among the portfolio seems to be positive and close to 1. In other words, assets tend to move together which increases the volatility of the portfolio.  
+
+
+####3.2 Portfolio with Short Sell
+```{r}
+#SHORT SELL IS ALLOWED
+#ALL VARIABLES are in MONTH
+
+#mvp 
+mvp.short=globalMin.portfolio(mean.r ,cov.r,shorts=TRUE)
+mvp.s.x=mvp.short$sd
+mvp.s.y=mvp.short$er
+mvp.s.w=mvp.short$weights
+
+#Tangency Portfolio
+tangency.short=tangency.portfolio(mean.r ,cov.r,risk.free = rf.m,shorts = TRUE)
+tg.s.y=tangency.short$er #tangency return
+tg.s.x=tangency.short$sd
+tg.s.w=tangency.short$weights
+
+#SHORT SELL IS ALLOWED
+#Efficient Portfolio Frontier 
+eff.front.short=efficient.frontier(mean.r ,cov.r,nport=50,
+                                   shorts = TRUE)
+ef.s.y=eff.front.short$er
+ef.s.x=eff.front.short$sd
+ef.s.w=eff.front.short$weights
+
+#Data Table
+library(formattable)
+short.table=data.frame("risk.free.day"=rbind(rf.m,0) ,
+                       "mvp day"=rbind(mvp.s.y,mvp.s.x),
+                       "tangency.day"=rbind(tg.s.y,tg.s.x),
+                       "mvp year"=rbind(mvp.s.y*12*30,mvp.s.x*sqrt(12*30)),
+                       "Tangency year"=rbind(tg.s.y*12*30,tg.s.x*sqrt(12*30)),
+                       "risk.free.year"=rbind(rf.m*12*30,0),
+                       row.names = c("return","risk")
+                       )
+formattable(short.table)
+
+
+#Value at Risk
+s=100000
+# t= one month
+#Loss~N(-mean.mvp,sd.mvp), assuming mvp is normal
+VaR.s.mvp=(-mvp.s.y+mvp.s.x*qnorm(0.95))*s
+VaR.ns.mvp
+VaR.ns.tg=(-tg.ns.y+tg.ns.x*qnorm(0.95))*s
+VaR.ns.tg
+#Sharpe Ratio
+sharpe.s = ( ef.s.y- rf.m) / ef.s.x # compute Sharpe’s ratios
+(tg.s.sharpe=max(sharpe.s))
+assets.s.sharpe=(mean.r -rf.m)/sd.r 
+```
+In this case, we allow selling short and obtain the MVP daily average return (0.0000979) and its standard
+deviation (0.0109613). The daily MVP return is higher than the daily risk free rate (0.00004278). If we convert them into yearly base, the MVP has its return equals 3.52% and risk 20.66%. The return is higher than the yearly risk free rate(1.54%) by 1.98%.
+```{r}
+sort(mvp.s.w,decreasing = T)
+```
+```{r}
+sort(tg.s.w,decreasing = T)
+```
+```{r}
+efficient.portfolio(scale(mean.r),cov.r,0.005,shorts=FALSE)
+```
+
+
+
+```{r}
+#Portfolio Plot
+plot(ef.s.x,ef.s.y,type="l",main="Efficient Portfolio Frontier (Short)", 
+     xlab="daily Risk", ylab="daily Return",
+     ylim = c(-0.0005,0.002),xlim=c(-0.0005,0.025),lty=3)
+points(0, rf.m, cex = 4, pch = "*") # show risk-free asset
+sharpe = ( ef.s.y- rf.m) / ef.s.x # compute Sharpe’s ratios
+ind = (sharpe == max(sharpe)) # Find maximum Sharpe’s ratio
+lines(c(0, 2), rf.m + c(0, 2) * (ef.s.y[ind] - rf.m) / ef.s.x[ind], lwd = 4, lty = 1, col = "blue") # show line of optimal portfolios
+points(ef.s.x[ind], ef.s.y[ind], cex = 4, pch = "*") # tangency portfolio
+ind2 = (ef.s.x == min(ef.s.x)) # find minimum variance portfolio
+points(ef.s.x[ind2], ef.s.y[ind2], cex = 2, pch = "+") # min var portfolio
+ind3 = (ef.s.y > ef.s.y[ind2])
+lines(ef.s.x[ind3], ef.s.y[ind3], type = "l", xlim = c(0, 1),
+      ylim = c(0, 0.3), lwd = 3, col = "red") # plot efficient frontier
+
+```
