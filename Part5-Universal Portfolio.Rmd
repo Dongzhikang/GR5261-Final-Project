@@ -1,0 +1,222 @@
+---
+title: "GR5261 Project Universal Portfolio"
+author: "Wenjun Yang wy2347"
+date: "4/13/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Index investing is a passive investment strategy that attempts to generate returns similar to a broad market index. Even though it is said to be "passive", there are still a lot we can do to improve our the portfolio to get better return from investment.
+
+We will start with equal share of 15 constituents of Dow Jones Industrial Average, and gradually adjust their weight of the whole asset according to their performance, namely value and momentum.
+The 15 stocks we choose are all from different department, which can help reduce potential market risk. They're 3M, American Express, Apple Inc., Boeing, Caterpillar, Chevron Corporation, Cisco Systems, Coca-Cola, Johnson & Johnson, Nike, Proctor & Gamble, Raytheon Technologies, United Health Group, Verizon and The Walt Disney Company.
+
+For academic purpose, first we assume that there is no transaction cost and the each share is divisible.
+
+## STEP 1: Gather data
+We choose close price data from 2015-04-01 to 2020-04-01.
+
+```{r message=FALSE, warning=FALSE}
+data=read.csv("data_close.csv")
+DJ15=colnames(data)
+NOA=ncol(data) #number of asset
+library(tidyverse)
+library(ggplot2)
+data_for_pic=cbind(Day=1:nrow(data),data)
+data_for_pic=data_for_pic%>%
+  pivot_longer(cols=c(2:16),names_to = "stock",values_to = "price")
+ggplot(data_for_pic,aes(x=Day))+
+  geom_line(aes(y=price,color=stock))+
+  theme_light()
+```
+
+## STEP 2: Construct a Preliminary Portfolio
+Assume we had 15 million dollar at the begining of the period and bought one million of each stock, then we get a portfolio consisting of 15 stocks with equal total value.
+If we don't make any adjustment to our portfolio during one year, our return by the end of the period will be:
+
+```{r}
+num=nrow(data) # there are 1090 rows in the data
+base=1000000
+return=sum(as.vector(data[num,])/as.vector(data[1,])*base)/NOA/base-1
+return
+#mean(1-as.vector(data[num,])/as.vector(data[1,]))
+
+```
+
+The value of portfolio will increase by 28%. 
+In the following sections below, we will update our portfolio by the performance of each stock, to see if we can improve our returns.
+
+Let's calculate the return of each stock on each day.
+```{r}
+daily_return=as.matrix(data[2:num,])/as.matrix(data[1:(num-1),])
+
+daily_return_pic=cbind(Day=2:nrow(data),daily_return)
+daily_return_pic=as_tibble(daily_return_pic)
+daily_return_pic=daily_return_pic%>%
+  pivot_longer(cols=c(2:16),names_to = "stock",values_to = "return")
+
+ggplot(daily_return_pic,aes(x=Day))+
+  geom_line(aes(y=return,color=stock))+
+  theme_light()
+
+cum_return=apply(daily_return,2,cumprod)
+cum_return=apply(cum_return,1,mean)
+```
+From the return graph, we can see recent COVID-19 period has witnessed a highly volatile market, that is to say, the variance of return during this period is much higher than usual and the price is undergoing big fluctuations. 
+
+## STEP3: Naive CRP (Constant Rebalanced Portfolio)
+CRP refers to a strategy that adjusting the shares we hold on each stock according to the change in their value and ensuring the allocation proportion of different stocks remain the same. A naive approach of CRP is to keep the proportion of each stock as 1/N (in this case, it would be 1/15). 
+It's a pretty conservative strategy since whether a stock is doing well or not, its proportion in the whole portfolio will always remain the same.
+```{r message=FALSE, warning=FALSE}
+# T=nrow(daily_return)
+# # Reduce("*",as.vector(rowSums(daily_return)))
+# total=base*Reduce("*" ,as.vector(rowSums(daily_return))/NOA)*NOA
+# return=total/base/NOA-1
+# return
+
+# install.packages("FNN")
+# install.packages("logopt", repos="http://R-Forge.R-project.org")
+library(logopt)
+# compare the result with the outcome from "logopt" package
+plain=crp(daily_return)
+plain[nrow(plain)]-1
+
+```
+By the strategy, the total value of portfolio will increase by 31.8%, which is better than doing nothing at all. Based on the nature of CRP, we can see it tends to buy in stocks whose value is decreasing. (This strategy will perform well if the drop in price is temporary, because we generally buy stocks at low price and sell them at high price. The fact that it's doing better than the preliminary strategy suggests that stocks during this period are very volatile and not constantly rising or falling, which makes them hard to predict. )
+
+
+## STEP4: BCRP (Best Constant Rebalanced Portfolio)
+BCRP is a strategy that cannot be achieved in real life, because its calculation involves future price which remains unknown when making adjustment. However, it serves as a good benchmark for other strategies.
+Its basic idea is to maximize the portfolio wealth at time n over all CRP, based on history price and present price (unknown).
+
+```{r}
+bcrp.optim(daily_return,maxit = 10,clean.up = TRUE,clean.up.eps = 1e-6,fast.only = F)
+
+# DJ30[3]
+# DJ30[19]
+
+DJ15[3]
+DJ15[13]
+```
+The best constant rebalanced portfolio consists of Apple and United Health Group, respectively taking up 53.2% and 46.8%.
+In this best constant rebalanced portfolio, the return will be:
+```{r}
+b=crp(daily_return[,c(3,13)],b=c(0.532,0.468))
+as.numeric(tail(b,1)-1)
+```
+This unachievable strategy will bring an astonishing 125% return on our investment.
+
+## STEP5: SCRP (Successive Constant Rebalanced Portfolio)
+SCRP is a strategy similar to BCRP, but only relies on historical data, making it achievable in real life. Each adjustment is the best allocation we can have based on previous data. 
+```{r}
+s=scrp(daily_return,by=1)
+as.numeric(tail(s,1)-1)
+```
+However, based on the result of BCRP and SCRP, we can see that there is huge gap between real life and fantasy. Moreover, SCRP is even worse than the naive CRP or doing nothing at all.
+SCRP can only give us 8.5% return. In fact, if we take transaction cost into consideration, the result would be much worse.
+SCRP is an relatively aggressive strategy. By its nature SCRP would adjust present strategy using every historical data, if the stocks have good momentum, that is to say they tend to follow their previous trend, then this strategy would be the most successful. In another word, if one stock's price keeps going up, SCRP will buy more of it, thus gaining more money. Consequently, its terrible result suggests there is no exact trend in the stocks and they fluctuate a lot, just like we have mentioned in Step 3 and what's happening during COVID-19.
+
+## STEP6: Compare between CRP, SCRP and BCRP
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(tibble)
+polydat=cbind(c(1:(nrow(data)-1)),cum_return,plain,b,s)
+polydat=as_tibble(polydat)
+polydat=polydat-1
+names(polydat)=c("day","Preliminary","Naive CRP","BCRP","SCRP")
+polydat=polydat%>%
+  pivot_longer(cols=c(2:5),names_to = "type",values_to = "return")
+
+# plot(plain-1,type="l",col="red",ylim=c(-0.4,2),xlab="TIME",ylab="RETRUN")
+# lines(b-1,col="blue")
+# lines(s-1,col="green")
+
+ggplot(data=polydat,aes(x=day))+
+  geom_line(aes(y=return,color=type))+
+  theme_light()
+
+```
+We can see from the graph that preliminary portfolio and naive CRP are very close. The reason behind that could be the return in each stock is relatively close, because those mega-companies are stable and rarely have any big fluctuation in their stock price. So whether keeping the proportion still or not, the general return will be similar.
+The graph above clearly show COV19's tragic impact to economy. Not a single strategy can help you make more money under such a horrible global economic situation. The better way to invest your money and keep risk under control would probably be shorting futures and options. 
+
+## STEP7: Improvement: Combination of SCRP and CRP
+```{r}
+
+
+```
+
+## STEP8: Interpretation of Economy from Universal Portfolio
+What if we close down our research to recent 50 business days? Is there any way we can make through this depressive time only using 15 stocks? We may need a very conservative strategy this time. But first we can look at the methods proposed above.
+```{r}
+data2020=tail(data,50)
+num=nrow(data2020) # there are 100 rows in the data2020
+base=1000000
+return=sum(as.vector(data2020[num,])/as.vector(data2020[1,])*base)/NOA/base-1
+return
+
+#basic
+daily_return2020=as.matrix(data2020[2:num,])/as.matrix(data2020[1:(num-1),])
+
+daily_return2020_pic=cbind(Day=2:nrow(data),daily_return2020)
+daily_return2020_pic=as_tibble(daily_return2020_pic)
+daily_return2020_pic=daily_return2020_pic%>%
+  pivot_longer(cols=c(2:16),names_to = "stock",values_to = "return")
+
+ggplot(daily_return2020_pic,aes(x=Day))+
+  geom_line(aes(y=return,color=stock))+
+  theme_light()
+
+cum_return2020=apply(daily_return2020,2,cumprod)
+cum_return2020=apply(cum_return2020,1,mean)
+
+
+#--------------------------------------------------------------------------------------------
+# Naive
+
+plain=crp(daily_return2020)
+plain[nrow(plain)]-1
+
+#--------------------------------------------------------------------------------------------
+#bcrp
+bcrp.optim(daily_return2020,maxit = 10,clean.up = TRUE,clean.up.eps = 1e-6,fast.only = F)
+
+# DJ30[3]
+# DJ30[19]
+
+DJ15[3]
+DJ15[13]
+
+b=crp(daily_return2020[,c(9,13)],b=c(0.574,0.426))
+as.numeric(tail(b,1)-1)
+
+#--------------------------------------------------------------------------------------------
+#scrp
+s=scrp(daily_return2020,by=1)
+as.numeric(tail(s,1)-1)
+
+#-------------------------------------------------------------------------------------------
+
+polydat2020=cbind(c(1:(nrow(data2020)-1)),cum_return2020,plain,b,s)
+polydat2020=as_tibble(polydat2020)
+polydat2020
+
+names(polydat2020)=c("Day","Preiminary","NORMAL","BCRP","SCRP")
+polydat2020=polydat2020-1
+polydat2020=polydat2020%>%
+  pivot_longer(cols=c(2:5),names_to = "type",values_to = "return")
+
+ggplot(data=polydat2020,aes(x=Day))+
+  geom_line(aes(y=return,color=type))+
+  theme_light()
+
+```
+
+
+
+
