@@ -1,0 +1,177 @@
+---
+title: "5261-project"
+author: "Tao Huang"
+date: "2020/4/18"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+data = read.csv("data_close.csv")
+
+n=dim(data)[1] 
+
+returns = (data[2:n,]/data[1:(n-1),]-1)
+
+returns
+```
+
+
+###6 Risk Management
+```{r}
+#Normal method
+library(PerformanceAnalytics)
+s=100000
+VaR.gaussian=sapply(returns,function(data){-s*VaR(data, method="gaussian")})
+VaR.gaussian
+
+
+ES.gaussian=sapply(returns,function(data){-s*ES(data, method="gaussian")})
+ES.gaussian
+  
+cat("BA has max VaR:", max(VaR.gaussian)," and max expected shortfall:",max(ES.gaussian),"\n")
+cat("KO has min VaR:",min(VaR.gaussian)," and min expected shortfall:",min(ES.gaussian),"\n")
+
+```
+
+
+```{r}
+#Nonparametrix Method
+s=100000
+VaR.nonparam=sapply(returns,function(data){-s*VaR(data, method="historical")})
+VaR.nonparam
+
+
+ES.nonparam=sapply(returns,function(data){-s*ES(data, method="historical")})
+ES.nonparam
+  
+cat("CAT has max VaR:", max(VaR.nonparam)," and max expected shortfall:",max(ES.nonparam),"\n")
+cat("KO has min VaR:",min(VaR.nonparam)," and min expected shortfall:",min(ES.nonparam),"\n")
+
+```
+```{r}
+#estimated standard errors and 95% confidence intervals  VaR 
+
+mean.VaR.boot=NULL
+se.VaR.boot=NULL
+ci.VaR.boot=matrix(NA,ncol=2,nrow=15)
+for (j in 1:15){
+  B=100
+  VaR.boot=NULL
+  for (i in 1:B){
+    index=sample(1:1089,1089,replace = TRUE)
+    resample=returns[index,j]
+    VaR.boot[i]=-s*VaR(resample, method="historical")
+    }
+  mean.VaR.boot[j]=mean(VaR.boot)
+  bias.VaR.boot=mean.VaR.boot-VaR.nonparam[1]
+  ssq.VaR.boot=sum((VaR.boot-mean.VaR.boot[j])^2)
+  se.VaR.boot[j]=sqrt(ssq.VaR.boot/(B-1))
+  mse.VaR.boot=ssq.VaR.boot/B
+  ci.VaR.boot[j,1]=VaR.nonparam[j]+qnorm(0.05)*se.VaR.boot[j]
+  ci.VaR.boot[j,2]=VaR.nonparam[j]+qnorm(0.95)*se.VaR.boot[j]
+}
+
+se.VaR.boot
+
+#VaR info table
+VaR.info=cbind(ci.VaR.boot[,1],VaR.nonparam,ci.VaR.boot[,2],se.VaR.boot)
+colnames(VaR.info)=c("5%CI","Estimated VaR","95%CI","SE")
+
+library(formattable)
+formattable(VaR.info)
+format(VaR.info,scientific = F)
+```
+
+```{r}
+#estimated standard errors and 95% confidence intervals  ES 
+
+mean.ES.boot=NULL
+se.ES.boot=NULL
+ci.ES.boot=matrix(NA,ncol=2,nrow=15)
+for (j in 1:15){
+  B=100
+  ES.boot=NULL
+  for (i in 1:B){
+    index=sample(1:1089,1089,replace = TRUE)
+    resample=returns[index,j]
+    ES.boot[i]=-s*ES(resample, method="historical")
+    }
+  mean.ES.boot[j]=mean(ES.boot)
+  bias.ES.boot=mean.ES.boot-ES.nonparam[1]
+  ssq.ES.boot=sum((ES.boot-mean.ES.boot[j])^2)
+  se.ES.boot[j]=sqrt(ssq.ES.boot/(B-1))
+  mse.ES.boot=ssq.ES.boot/B
+  ci.ES.boot[j,1]=ES.nonparam[j]+qnorm(0.05)*se.ES.boot[j]
+  ci.ES.boot[j,2]=ES.nonparam[j]+qnorm(0.95)*se.ES.boot[j]
+}
+```
+
+
+
+```{r}
+ES.info=cbind(ci.ES.boot[,1],ES.nonparam,ci.ES.boot[,2],se.ES.boot)
+colnames(ES.info)=c("5%CI","Estimated ES","95%CI","SE")
+formattable(ES.info)
+info=as.data.frame(ES.info)
+```
+
+
+
+
+
+
+
+```{r}
+library(copula)
+library(VineCopula)
+library(tidyverse)
+# Gaussian, t, archimedean, clayton, gumbel
+
+data = read.csv("data_close.csv")
+
+cop.norm = normalCopula(dim=15)
+fit.copnorm = fitCopula(cop.norm,pobs(data),method="ml")
+fit.copnorm
+AIC(fit.copnorm)
+BIC(fit.copnorm)
+logLik(fit.copnorm)
+
+cop.t = tCopula(dim=15)
+fit.copt = fitCopula(cop.t,pobs(data),method = "ml")
+fit.copt
+AIC(fit.copt)
+BIC(fit.copt)
+logLik(fit.copt)
+
+rho<-coef(fit.copt)[1]
+df<-coef(fit.copt)[2]
+persp(tCopula(dim=2,rho,df=df),dCopula)
+u<-rCopula(4000,tCopula(dim=15,rho,df=df))
+
+qplot(u[,1],u[,2],colour = u[,1], main="t copula random samples", xlab = "u", ylab = "v")
+# plot(u[,1],u[,2],pch="*",col="blue")
+
+cop.clayton = claytonCopula(dim=15)
+fit.copclayton = fitCopula(cop.clayton,pobs(data),method = "ml")
+fit.copclayton
+AIC(fit.copclayton)
+BIC(fit.copclayton)
+logLik(fit.copclayton)
+
+cop.gumbel = gumbelCopula(dim=15)
+fit.copgumbel = fitCopula(cop.gumbel,pobs(data),method = "ml")
+fit.copgumbel
+AIC(fit.copgumbel)
+BIC(fit.copgumbel)
+logLik(fit.copgumbel)
+
+cop.archm = archmCopula(family = "frank",dim=15)
+fit.archm = fitCopula(cop.archm, pobs(data),method = "ml")
+fit.archm
+AIC(fit.archm)
+BIC(fit.archm)
+logLik(fit.archm)
+```
+
