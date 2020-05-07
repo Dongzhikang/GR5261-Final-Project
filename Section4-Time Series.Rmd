@@ -1,0 +1,280 @@
+---
+title: "project"
+author: "Zhikang Dong zd2241"
+date: "4/25/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Time series analysis
+
+In this section, we would like to analyze performance of stocks and forecast stock price based on time series theory, especially GARCH models.
+
+## Time varying betas
+
+CAPM (capital asset pricing model) is one of the most common financial model. People use this model to establish the portfolio and estimate returns and market sensitivity. Here, we can use GARCH model to find betas (stock sensitivity) of the stock in different time. 
+
+We have the CAPM model like this:
+
+$$r_{t}=\alpha+\beta r_{m, t}+e_{t}, \quad t=1, \ldots, T$$
+where $\alpha$ (Jensen index) means the mispricing of the stock compared with the market. 
+
+Generally, if $\beta$ is significantly greater than 0, which means that the stock responds aggresively to the market. On the other hand, if $\beta$ is relatively close to 0, then the market doesn't have much impact on it. Thus $\beta<1$ is regarded as less risky than the market, and $\beta>1$ indicates a high risk investment.
+
+In practice, we would like to see an asset outperform the market with less risk. Mathematically, $\alpha>0$ and $\beta$ is small.
+
+For the CAPM model above, we have
+
+$$\hat\beta=\frac{\operatorname{Cov}\left(r_{t}, r_{m, t}\right)}{\operatorname{Var}\left(r_{m, t}\right)}$$
+where $r_t$ and $r_{m,t}$ are the log-return of the stock and the index we choose at time $t$.
+
+By fitting a good GARCH(1, 1) model, we can easily get volatility of the stock and the market.
+
+Here we can use $$\operatorname{Cov}\left(r_{t}, r_{m, t}\right)=\frac{\operatorname{Var}\left(r_t+r_{m, t}\right)-\operatorname{Var}\left(r_t-r_{m, t}\right)}{4}$$
+
+```{r load data, echo=F, message=FALSE}
+library(readr)
+library(fGarch)
+dji <- read_csv("~/Documents/CU 2020 Spring/Stoc in Fin/^DJI.csv")
+log_return_dji <- log(dji$Close[-1]/dji$Close[-1090])
+
+
+stocks <- read_csv("~/Documents/CU 2020 Spring/Stoc in Fin/data_return.csv")
+log_return_stocks <- log(stocks[-1,]/stocks[-1090,])
+names(log_return_stocks) <- c("MMM","AXP","AAPL","BA","CAT",
+                              "CVX","CSCO","KO","JNJ","NKE",
+                              "PG","RTX","UNH","VZ","DIS")
+```
+
+
+Firstly, we consider $\beta$ in traditional CAPM model.
+
+```{r trad_beta, echo=FALSE}
+trad_beta_all <- sapply(log_return_stocks, function(x) lm(x~log_return_dji)$coefficient)
+
+rownames(trad_beta_all) <- c("alpha", "beta")
+trad_beta_all
+```
+
+We plot each stock's time-varying $\beta$ below. The horizontal blue line is traditional $\beta$.
+
+```{r time_vary_beta, echo=FALSE, message=FALSE, results='hide', fig.width=9, fig.height=2.5}
+
+time_vary_beta <- function(rtn){
+  xp <- rtn+log_return_dji
+  xm <- rtn-log_return_dji
+  m1 <- garchFit(~1+garch(1, 1), data = xp, trace = F)
+  m2 <- garchFit(~1+garch(1, 1), data = xm, trace = F)
+  m3 <- garchFit(~1+garch(1, 1), data = log_return_dji, trace = F)
+  vxp <- volatility(m1)
+  vxm <- volatility(m2)
+  vdji <- volatility(m3)
+  beta <- (vxp^2-vxm^2)/(4*vdji^2)
+}
+par(mfcol=c(1, 3))
+
+for (i in 1:15){
+  ts.plot(time_vary_beta(log_return_stocks[,i]), main=paste0(names(log_return_stocks)[i],"'s Beta"), ylab="Beta")
+  abline(h=trad_beta_all[2,i], col="blue", lwd=1.5)
+}
+
+sort(sapply(log_return_stocks,function(x) mean(time_vary_beta(x))))
+```
+
+By selecting positive $\alpha$ and five smallest expected $\beta's$, we have these five stocks: PG, KO, VZ, JNJ, DIS. (Ordered by descending $\beta$)
+
+The industries these stocks belong to respectively are Fast moving consumer goods, food industry, Telecommunication, Pharmaceutical industry, Broadcasting and entertainment. It seems like traditional industries and essential industries are less risky to the market.
+
+# Minimum variance portfolios
+
+In Markovitz portfolio theory, we can derive minimum variance porfolios from the time series. Combined with GARCH model, we can estimate time-varying covariances of asset returns for portfolio selection. Here we assume that short selling is not allowed. Then we solve this quadratic optimization problem:
+
+$$\min _{w} w^{\prime} V_{t} w \quad \text { such that } \quad \sum_{i=1}^{k} w_{i}=1 \quad \text{and} \quad w_{i}\geq0$$
+
+For simplicity, we use five stocks we mentioned before to establish a portfolio. Here we estimate covariances by using GARCH(1, 1) model for individual asset returns and their sums and differences.
+
+```{r MVP, echo=F, warning=FALSE}
+library(quadprog)
+library(Matrix)
+"GMVP" <- function(rtn,start=500){
+  # compute the weights and variance of global minimum variance portfolio.
+  # The time period is from (start) to end of the data.
+  #
+  # uses cov(x,y) = [var(x+y)-var(x-y)]/4.
+  #
+  if(!is.matrix(rtn))rtn=as.matrix(rtn)
+  #
+  library(fGarch)
+  T=dim(rtn)[1]
+  k=dim(rtn)[2]
+  wgt = NULL
+  mVar=NULL
+  VAR = NULL
+  ONE=matrix(1,k,1)
+  prtn=NULL
+  Det=NULL
+  for (t in start:T){
+    # estimate variances and covariances at time "t".
+    COV=matrix(0,k,k)
+    for (i in 1:k){
+      m1=garchFit(~1+garch(1,1),data=rtn[1:t,i],trace=F)
+      COV[i,i]=volatility(m1)[t]^2
+      if(i < k){
+        for (j in (i+1):k){
+          x=rtn[1:t,i]+rtn[1:t,j]
+          y=rtn[1:t,i]-rtn[1:t,j]
+          m2=garchFit(~1+garch(1,1),data=x,trace=F)
+          m3=garchFit(~1+garch(1,1),data=y,trace=F)
+          v2=volatility(m2)[t]
+          v3=volatility(m3)[t]
+          COV[j,i]=(v2^2-v3^2)/4
+          COV[i,j]=COV[j,i]
+          # end of j-loop
+        }
+        # end of (if-statement)
+      }
+      # end of i-loop
+    }
+    result <- solve.QP(Dmat = nearPD(COV)$mat,
+             dvec = t(rep(0, k)),
+             Amat = t(rbind(rep(1, k), diag(1, k))),
+             bvec = c(1, rep(0,k)),
+             meq = 1)
+    Psi <- result$solution
+    mv <- 2*result$value
+    Det=c(Det,det(COV))
+    #V=solve(COV)
+    VAR=rbind(VAR,diag(COV))
+    #Psi=V%*%ONE
+    #W=sum(ONE*Psi)
+    #Psi=Psi/W
+    wgt=cbind(wgt,Psi)
+    mVar=c(mVar,mv) ## Calculating minimum variance
+    if(t < T){
+      prtn=c(prtn,sum(rtn[t+1,]*Psi))
+    }
+    
+  }
+  
+  GMVP <- list(weights=wgt, minVariance=mVar,variances=VAR, returns=prtn,det=Det)
+}
+
+gmvp_five <- GMVP(log_return_stocks[c("PG","KO","VZ" ,"JNJ", "DIS")], 1089-500)
+
+plot(1:501, gmvp_five$weights[1,], "l", main="Weights", ylab="Weight", xlab="Time")
+lines(1:501, gmvp_five$weights[2,], col="blue")
+lines(1:501, gmvp_five$weights[3,], col="yellow")
+lines(1:501, gmvp_five$weights[4,], col="green")
+lines(1:501, gmvp_five$weights[5,], col="orange")
+legend("topright", c("PG","KO","VZ" ,"JNJ", "DIS"), 
+       col=c("black","blue", "yellow", "green", "orange"),
+       lty=1, cex=.8)
+
+plot(1:501, sqrt(gmvp_five$minVariance), "l", main="Volatility", xlab="Time", ylab="Vol")
+lines(1:501, sqrt(gmvp_five$variances[,1]), col="red")
+lines(1:501, sqrt(gmvp_five$variances[,2]), col="blue")
+lines(1:501, sqrt(gmvp_five$variances[,3]), col="yellow")
+lines(1:501, sqrt(gmvp_five$variances[,4]), col="green")
+lines(1:501, sqrt(gmvp_five$variances[,5]), col="orange")
+legend(x=17, y=.037, c("Portfolio", "PG","KO","VZ" ,"JNJ", "DIS"), 
+       col=c("black","blue", "yellow", "green", "orange"),
+       lty=1)
+```
+
+As expected, the minimum variance portfolio reduces the risk.
+
+# Prediction
+
+Another application of GARCH model is to improve the modeling and forecasting of a time series. From the price plot, we can see a clear trend, which means the time series is non-stationary. Therefore, a pure ARMA model for price change is not adequate. In order to analyzing volatility, we can use ARMA-GARCH model to handle complexity of data and improve prefiction. 
+
+Again, we use PG, KO, VZ, JNJ, DIS as examples.
+
+
+Firstly, we plot price and price changes data of each stock. We can find weak stationarity in price change plots. Therefore, we use price change data instead of raw price data.
+
+```{r forecasting, fig.width=9, fig.height=2.5, echo=F}
+par(mfcol=c(1, 2))
+ts.plot(stocks$PG.Close, ylab="Price", main="PG")
+c_pg <- diff(stocks$PG.Close)
+ts.plot(c_pg, ylab="Price Change", main="PG")
+
+ts.plot(stocks$KO.Close, ylab="Price", main="KO")
+c_ko <- diff(stocks$KO.Close)
+ts.plot(c_ko, ylab="Price Change", main="KO")
+
+ts.plot(stocks$VZ.Close, ylab="Price", main="VZ")
+c_vz <- diff(stocks$VZ.Close)
+ts.plot(c_vz, ylab="Price Change", main="VZ")
+
+ts.plot(stocks$JNJ.Close, ylab="Price", main="JNJ")
+c_jnj <- diff(stocks$JNJ.Close)
+ts.plot(c_jnj, ylab="Price Change", main="JNJ")
+
+ts.plot(stocks$DIS.Close, ylab="Price", main="DIS")
+c_dis <- diff(stocks$DIS.Close)
+ts.plot(c_dis, ylab="Price Change", main="DIS")
+```
+
+Next, we use the function auto.arima to find best ARMA coefficients and combine it with GARCH(1, 1) model.
+
+Finally, we would like to use skew t-distribution innovations instead of normal innovations to fit the data.
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+library(forecast)
+m1 <- auto.arima(c_pg, max.p = 5, max.q = 5, max.P = 10, max.Q = 10)$arma
+summary(arima(c_pg, order = c(4, 0, 5)))
+m2 <- garchFit(~arma(0, 1)+garch(1, 1), data = c_pg,
+               trace = F, include.mean = F, cond.dist = "sstd")
+
+
+m3 <- auto.arima(c_ko, max.p = 5, max.q = 5, max.P = 10, max.Q = 10)$arma
+m4 <- garchFit(~arma(1, 0)+garch(1, 1), data = c_ko,
+               trace = F, include.mean = F, cond.dist = "sstd")
+
+
+m5 <- auto.arima(c_vz, max.p = 5, max.q = 5, max.P = 10, max.Q = 10)$arma
+m6 <- garchFit(~arma(1, 0)+garch(1, 1), data = c_vz,
+               trace = F, include.mean = F, cond.dist = "sstd")
+
+
+m7 <- auto.arima(c_jnj, max.p = 5, max.q = 5, max.P = 10, max.Q = 10)$arma
+m8 <- garchFit(~arma(1, 1)+garch(1, 1), data = c_jnj,
+               trace = F, include.mean = F, cond.dist = "sstd")
+
+
+m9 <- auto.arima(c_dis, max.p = 10, max.q = 10, max.P = 10, max.Q = 10)$arma
+m10 <- garchFit(~arma(1, 1)+garch(1, 1), data = c_dis,
+               trace = F, include.mean = F, cond.dist = "sstd")
+```
+
+And we can reveal prediction for each stock:
+
+PG:
+```{r, echo=FALSE}
+predict(m2, n.ahead=2)
+```
+
+KO:
+```{r, echo=FALSE}
+predict(m4, n.ahead=2)
+```
+
+VZ:
+```{r, echo=FALSE}
+predict(m6, n.ahead=2)
+```
+
+JNJ:
+```{r, echo=FALSE}
+predict(m8, n.ahead=2)
+```
+
+DIS:
+```{r, echo=FALSE}
+predict(m10, n.ahead=2)
+```
+
+We can know that ARMA-GARCH model yields  good one-step ahead and two-stpe ahead predictions.
